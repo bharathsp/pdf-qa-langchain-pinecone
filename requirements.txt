@@ -1,0 +1,18 @@
+# Core
+streamlit
+python-dotenv
+openai
+tiktoken
+unstructured
+pypdf
+pinecone
+pandas
+numpy
+
+# LangChain Ecosystem
+langchain==0.3.7
+langchain-core==0.3.14
+langchain-community==0.3.2
+langchain-openai==0.3.1
+langchain-text-splitters==0.3.0
+langchain-chains==0.3.0
