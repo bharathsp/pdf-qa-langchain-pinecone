@@ -1,18 +1,17 @@
 # Core
-streamlit
-python-dotenv
-openai
-tiktoken
-unstructured
-pypdf
-pinecone
-pandas
-numpy
+streamlit>=1.28.0
+python-dotenv>=1.0.0
+openai>=1.0.0
+tiktoken>=0.5.0
+unstructured>=0.10.0
+pypdf>=3.0.0
+pinecone-client>=3.0.0
+pandas>=2.0.0
+numpy>=1.24.0
 
 # LangChain Ecosystem
-langchain==0.3.7
-langchain-core==0.3.14
-langchain-community==0.3.2
-langchain-openai==0.3.1
-langchain-text-splitters==0.3.0
-langchain-chains==0.3.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-openai>=0.3.0
+langchain-text-splitters>=0.3.0

@@ -5,13 +5,14 @@ This application allows users to query PDF documents using natural language.
 
 import streamlit as st
 import os
-import pinecone
+from pinecone import Pinecone as PineconeClient
 from dotenv import load_dotenv
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, OpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import Pinecone
-from langchain.chains import load_qa_chain
+from langchain.chains import RetrievalQA
+from langchain_core.prompts import PromptTemplate
 
 # Load environment variables
 load_dotenv()
@@ -22,15 +23,13 @@ load_dotenv()
 
 # Initialize Pinecone connection
 def initialize_pinecone():
-    """Initialize and return Pinecone connection with API credentials."""
+    """Initialize and return Pinecone client with API credentials."""
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
-    pinecone_environment = os.getenv('PINECONE_ENVIRONMENT', 'gcp-starter')
+    if not pinecone_api_key:
+        raise ValueError("PINECONE_API_KEY not found in environment variables")
     
-    pinecone.init(
-        api_key=pinecone_api_key,
-        environment=pinecone_environment
-    )
-    return pinecone
+    pc = PineconeClient(api_key=pinecone_api_key)
+    return pc
 
 # ============================================================================
 # DOCUMENT PROCESSING FUNCTIONS
@@ -86,7 +85,7 @@ def create_embeddings():
     return embeddings
 
 
-def initialize_vector_store(documents, embeddings, index_name):
+def initialize_vector_store(documents, embeddings, index_name, pinecone_client):
     """
     Create or connect to a Pinecone vector store and upload documents.
     
@@ -94,6 +93,7 @@ def initialize_vector_store(documents, embeddings, index_name):
         documents (list): List of document chunks to index
         embeddings: Embeddings instance for vectorization
         index_name (str): Name of the Pinecone index
+        pinecone_client: Initialized Pinecone client
         
     Returns:
         Pinecone: Vector store instance
@@ -128,24 +128,37 @@ def search_similar_documents(vector_store, user_query, num_results=2):
     return similar_documents
 
 
-def get_answer_from_documents(user_query, similar_documents, language_model, qa_chain):
+def create_qa_chain(vector_store, language_model):
     """
-    Generate an answer to the user's query based on retrieved documents.
+    Create a question-answering chain using RetrievalQA.
     
     Args:
-        user_query (str): The user's question
-        similar_documents (list): Relevant document chunks
+        vector_store: Pinecone vector store instance
         language_model: OpenAI LLM instance
-        qa_chain: Question-answering chain instance
         
     Returns:
-        str: Generated answer
+        RetrievalQA: QA chain instance
     """
-    answer = qa_chain.run(
-        input_documents=similar_documents,
-        question=user_query
+    prompt_template = """Use the following pieces of context to answer the question at the end.
+    If you don't know the answer, just say that you don't know, don't try to make up an answer.
+    
+    {context}
+    
+    Question: {question}
+    Answer:"""
+    
+    PROMPT = PromptTemplate(
+        template=prompt_template, input_variables=["context", "question"]
     )
-    return answer
+    
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=language_model,
+        chain_type="stuff",
+        retriever=vector_store.as_retriever(),
+        chain_type_kwargs={"prompt": PROMPT},
+        return_source_documents=True
+    )
+    return qa_chain
 
 # ============================================================================
 # STREAMLIT APPLICATION
@@ -225,7 +238,7 @@ def main():
         st.subheader("Model Settings")
         model_name = st.selectbox(
             "OpenAI Model",
-            options=["text-davinci-003", "gpt-3.5-turbo", "gpt-4"],
+            options=["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo-preview", "gpt-4o"],
             index=0,
             help="Select the OpenAI model to use"
         )
@@ -271,7 +284,7 @@ def main():
                 
                 # Step 3: Initialize Pinecone
                 st.info("🌲 Connecting to Pinecone...")
-                initialize_pinecone()
+                pinecone_client = initialize_pinecone()
                 
                 # Step 4: Create embeddings
                 st.info("🔢 Creating embeddings...")
@@ -282,24 +295,26 @@ def main():
                 vector_store = initialize_vector_store(
                     document_chunks,
                     embeddings,
-                    pinecone_index_name
+                    pinecone_index_name,
+                    pinecone_client
                 )
                 
                 # Step 6: Initialize LLM and QA chain
                 st.info("🤖 Initializing language model...")
                 openai_api_key = os.getenv('OPENAI_API_KEY')
-                language_model = OpenAI(
+                language_model = ChatOpenAI(
                     model_name=model_name,
                     temperature=temperature,
-                    openai_api_key=openai_api_key
+                    api_key=openai_api_key
                 )
-                qa_chain = load_qa_chain(language_model, chain_type="stuff")
+                qa_chain = create_qa_chain(vector_store, language_model)
                 
                 # Store in session state
                 st.session_state['vector_store'] = vector_store
                 st.session_state['qa_chain'] = qa_chain
                 st.session_state['language_model'] = language_model
                 st.session_state['num_retrieval_results'] = num_retrieval_results
+                st.session_state['pinecone_client'] = pinecone_client
                 
                 st.success("🎉 System initialized successfully!")
                 
@@ -340,12 +355,9 @@ def main():
                     
                     # Generate answer
                     with st.spinner("🤖 Generating answer..."):
-                        answer = get_answer_from_documents(
-                            user_query,
-                            similar_documents,
-                            st.session_state['language_model'],
-                            st.session_state['qa_chain']
-                        )
+                        result = st.session_state['qa_chain'].invoke({"query": user_query})
+                        answer = result['result']
+                        source_documents = result.get('source_documents', similar_documents)
                     
                     # Display answer
                     st.markdown("### 📝 Answer")
@@ -353,9 +365,11 @@ def main():
                     
                     # Show source documents
                     with st.expander("📚 View Source Documents"):
-                        for i, doc in enumerate(similar_documents, 1):
+                        for i, doc in enumerate(source_documents, 1):
                             st.markdown(f"**Document {i}:**")
                             st.text(doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content)
+                            if hasattr(doc, 'metadata') and doc.metadata:
+                                st.caption(f"Source: {doc.metadata.get('source', 'Unknown')}")
                             st.markdown("---")
                     
                 except Exception as e:
